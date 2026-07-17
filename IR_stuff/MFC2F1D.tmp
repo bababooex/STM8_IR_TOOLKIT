@@ -1,0 +1,566 @@
+#include "hd1650.h"
+#include "stm8s.h"
+#include "stm8s_it.h"
+#include "stm8s103_serial.h"
+#include "stm8s_delay.h"
+//structs
+//simpledecode struc
+typedef struct {
+    uint8_t  protocol;
+    uint16_t address;
+    uint16_t command;
+} simple_dec_t;
+//defs
+//rca vars
+#define RC5_HALF_BIT   889
+#define RC6_HALF_BIT   444
+
+// Simple protocol IDs
+#define PROTO_SIMPLE_UNKNOWN   0
+#define PROTO_SIMPLE_NEC       1
+#define PROTO_SIMPLE_NECEXT    2
+#define PROTO_SIMPLE_NEC42     3
+#define PROTO_SIMPLE_NEC42EXT  4
+#define PROTO_SIMPLE_SAMSUNG   5
+#define PROTO_SIMPLE_RC5       6
+#define PROTO_SIMPLE_RC5X      7
+#define PROTO_SIMPLE_RC6       8
+#define PROTO_SIMPLE_RCA       9
+#define PROTO_SIMPLE_KASEIKYO 10
+#define PROTO_SIMPLE_PIONEER  11
+#define PROTO_SIMPLE_SIRC     12
+#define PROTO_SIMPLE_SIRC15   13
+#define PROTO_SIMPLE_SIRC20   14
+
+//joystick pins (left shifted tactile sw)
+#define JS_LEFT   GPIOD, GPIO_PIN_4
+#define JS_DOWN   GPIOD, GPIO_PIN_6
+#define JS_RIGHT  GPIOD, GPIO_PIN_7
+#define JS_UP 	  GPIOB, GPIO_PIN_2
+#define JS_OK     GPIOB, GPIO_PIN_1
+//defs masking
+#define JS_Right()  GPIO_ReadInputPin(JS_RIGHT) == RESET
+#define JS_Left()   GPIO_ReadInputPin(JS_LEFT) == RESET
+#define JS_Down()   GPIO_ReadInputPin(JS_DOWN) == RESET    
+#define JS_Up() GPIO_ReadInputPin(JS_UP) == RESET    
+#define JS_Ok() GPIO_ReadInputPin(JS_OK) == RESET   
+//vars
+volatile uint8_t pulse_count;
+volatile uint8_t col=0;
+volatile uint8_t capture_done;
+volatile uint8_t first_edge = 0;      // reset to 1 at start of capture
+volatile uint16_t pulses[MAX_PULSES];
+volatile uint16_t last_edge=0;
+volatile uint8_t dly_counter;
+volatile uint32_t ms_counter;
+uint16_t i,j;
+//display items after decoding
+simple_dec_t SimpleDecode(const uint16_t *pulses, uint16_t count);
+void clock_setup(void);
+void EXTI_setup(void);
+void TIM5_setup(void);
+void TIM6_setup(void);
+void TIM1_setup(void);
+void rx_cleanup(void);
+void JS_init(void);
+void ReceiveIR(void);
+void SendIR(const uint16_t *data, uint8_t count,
+                         uint16_t freq_hz, uint8_t duty_pc);
+void main(void)
+{
+    clock_setup();
+		HD1650_init();
+		HD1650_displayOn();
+		HD1650_clearDisplay();
+		//HD1650_sendDigit("ABCD", 1);
+		//JS_init();
+		ReceiveIR();
+		
+
+}
+/*
+void TransmitIR(void)
+{
+	
+	
+	
+}
+*/
+
+
+void ReceiveIR(void)
+{
+    uint8_t restart_capture;   // local, controls the outer loop
+    uint8_t capture_abort;     // local, for user abort during capture
+
+    do {
+        restart_capture = 0;
+        capture_abort = 0;
+        first_edge = 1;
+        pulse_count = 0;
+        capture_done = 0;
+       // dly_counter = 0;
+        EXTI_setup();
+        TIM5_setup();
+        TIM5_SetCounter(0);
+        HD1650_colonOn();
+        enableInterrupts();
+        while (first_edge && !capture_abort) {
+					/*
+            if (JS_Ok()) {      // OK button aborts the whole capture
+                capture_abort = 1;
+            }
+						*/
+        }
+
+        if (capture_abort) {
+            rx_cleanup();
+            HD1650_colonOff();
+            break;              // exit ReceiveIR entirely
+        }
+
+        while (!capture_done) {
+					/*
+					if (TIM5_GetCounter() > 100000) {   // 100 ms at your TIM5 tick rate
+								capture_done = 1;
+					}
+									
+					
+					
+						if (col){
+							HD1650_colonOff();
+						}
+						
+            if (dly_counter > 2) {
+                capture_done = 1;
+            }
+						
+            if (JS_Ok()) {      // user can still abort during capture
+                capture_abort = 1;
+                break;
+            }
+						*/
+        }
+
+      //  rx_cleanup();              // stop timers, disable interrupts
+        HD1650_colonOn();
+
+        if (capture_abort) {
+            break;              // abort ? leave ReceiveIR
+        }
+				enableInterrupts();
+				CLK_PeripheralClockConfig(CLK_PERIPHERAL_UART1, ENABLE);
+				Serial_begin(9600);
+				
+				Serial_newline(); 
+				Serial_print_string("IR Pulses: ");
+				UART_SendDec(pulse_count);
+				Serial_newline(); 
+		
+				for (i = 0; i < pulse_count-1; i++) {
+						UART_SendDec(pulses[i]);
+						Serial_print_char(i < pulse_count-2 ? ',' : '\n');
+				}
+				Serial_newline(); 
+				/*
+				disableInterrupts();
+				
+				//simple_dec_t dec = SimpleDecode(pulses, pulse_count - 1);
+			//	HD1650_writeNumber(dec.protocol, 0); 
+				while (1) {
+            // Left  ? exit ReceiveIR
+            if (JS_Left()) {
+							SendIR(pulses, pulse_count-1, 38000, 33);
+                
+				}
+			}
+				
+				
+				
+				
+				
+				/*
+        while (1) {
+            // Left  ? exit ReceiveIR
+            if (JS_Left()) {
+                return;          // leave the whole function
+            }
+            // Right ? capture another code
+            if (JS_Right()) {
+                restart_capture = 1;
+                break;           // exit inner loop, outer do-while will repeat
+            }
+            // OK ? send the captured code
+            if (JS_Ok()) {
+
+               // uint16_t freq = 38000;   // default; you can add detection here
+                //IR_SendRaw(pulses, pulse_count - 1, freq, 33);
+                //HD1650_writeNumber(0, 0); // clear display after sending
+                // stay in the inner loop, can send again
+            }
+        }
+*/
+    } while (restart_capture);
+}
+void JS_init(void)
+{
+    GPIO_Init(JS_RIGHT, GPIO_MODE_IN_PU_NO_IT);
+    GPIO_Init(JS_LEFT,  GPIO_MODE_IN_PU_NO_IT);
+    GPIO_Init(JS_DOWN,  GPIO_MODE_IN_PU_NO_IT);
+		GPIO_Init(JS_UP,  GPIO_MODE_IN_PU_NO_IT);
+		GPIO_Init(JS_OK,  GPIO_MODE_IN_PU_NO_IT);
+}
+
+static uint8_t in_range(uint16_t val, uint16_t target, uint16_t tol) {
+    return (val >= target - tol) && (val <= target + tol);
+}
+
+// half bit helper
+static uint16_t extract_half_bits(const uint16_t *pulses, uint16_t count,
+                                  uint8_t initial_level, uint16_t half_us,
+                                  uint8_t *levels, uint16_t max_levels)
+{
+    uint16_t half_count = 0;
+    uint8_t level = initial_level;
+
+    for (i = 0; i < count && half_count < max_levels; i++) {
+        uint16_t dur = pulses[i];
+        uint16_t num_half = (dur + (half_us / 2)) / half_us;
+        if (num_half == 0) num_half = 1;
+
+        for (j = 0; j < num_half && half_count < max_levels; j++) {
+            levels[half_count++] = level;
+        }
+        level ^= 1;
+    }
+    return half_count;
+}
+
+//handling manchester
+static uint8_t manchester_decode(const uint8_t *levels, uint16_t half_count,
+                                 uint8_t *bits, uint8_t max_bits)
+{
+    uint8_t bit_count = 0;
+    for (i = 0; i + 1 < half_count && bit_count < max_bits; i += 2) {
+        if (levels[i] == 1 && levels[i+1] == 0)
+            bits[bit_count++] = 0;
+        else if (levels[i] == 0 && levels[i+1] == 1)
+            bits[bit_count++] = 1;
+        else
+            return 0; // invalid transition
+    }
+    return bit_count;
+}
+
+// lightweight decode
+simple_dec_t SimpleDecode(const uint16_t *pulses, uint16_t count)
+{
+    simple_dec_t res = {PROTO_SIMPLE_UNKNOWN, 0, 0};
+    if (count < 8) return res;
+
+    uint16_t h1 = pulses[0];
+    uint16_t h2 = pulses[1];
+
+    // ====================== NEC FAMILY ======================
+    if (in_range(h1, 9000, 1200) && in_range(h2, 4500, 700)) {
+        uint32_t bits = 0;
+        uint16_t idx = 2;
+        uint8_t bits_extracted = 0;
+
+        while (idx + 1 < count && bits_extracted < 48) {
+            uint16_t space = pulses[idx + 1];
+            uint8_t bit = in_range(space, 1690, 300) ? 1 : 0;
+            bits |= ((uint32_t)bit << bits_extracted);
+            idx += 2;
+            bits_extracted++;
+        }
+
+        if (bits_extracted >= 42) {
+            // NEC42 / NEC42EXT
+            if ((bits_extracted >= 42) && ((bits >> 13) & 0x1FFF) == ((~bits) & 0x1FFF)) {
+                res.protocol = PROTO_SIMPLE_NEC42;
+                res.address = bits & 0x1FFF;
+                res.command = (bits >> 26) & 0xFF;
+            } else {
+                res.protocol = PROTO_SIMPLE_NEC42EXT;
+                res.address = bits & 0x3FFFFFF;
+                res.command = (bits >> 26) & 0xFFFF;
+            }
+        } 
+        else if (bits_extracted >= 32) {
+            uint8_t a = bits & 0xFF;
+            uint8_t a_inv = (bits >> 8) & 0xFF;
+            if (a_inv == (uint8_t)(~a)) {
+                res.protocol = PROTO_SIMPLE_NEC;
+                res.address = a;
+                res.command = (bits >> 16) & 0xFF;
+            } else {
+                res.protocol = PROTO_SIMPLE_NECEXT;
+                res.address = bits & 0xFFFF;
+                res.command = (bits >> 16) & 0xFFFF;
+            }
+        }
+        return res;
+    }
+
+    // ====================== SAMSUNG32 ======================
+    if (in_range(h1, 4500, 600) && in_range(h2, 4500, 600)) {
+        res.protocol = PROTO_SIMPLE_SAMSUNG;
+        uint32_t bits = 0;
+        uint16_t idx = 2;
+        for (i = 0; i < 32 && idx + 1 < count; i++) {
+            uint16_t space = pulses[idx + 1];
+            uint8_t bit = in_range(space, 1690, 280) ? 1 : 0;
+            bits |= ((uint32_t)bit << i);
+            idx += 2;
+        }
+        res.address = bits & 0xFF;
+        res.command = (bits >> 16) & 0xFF;
+        return res;
+    }
+
+    // ====================== PIONEER ======================
+    if (in_range(h1, 8500, 1000) && in_range(h2, 4225, 600)) {
+        res.protocol = PROTO_SIMPLE_PIONEER;
+        uint32_t bits = 0;
+        uint16_t idx = 2;
+        for (i = 0; i < 32 && idx + 1 < count; i++) {
+            uint16_t space = pulses[idx + 1];
+            uint8_t bit = in_range(space, 1500, 250) ? 1 : 0;
+            bits |= ((uint32_t)bit << i);
+            idx += 2;
+        }
+        res.address = bits & 0xFF;
+        res.command = (bits >> 16) & 0xFF;
+        return res;
+    }
+
+    // ====================== SIRC FAMILY ======================
+    if (in_range(h1, 2400, 400) && in_range(h2, 600, 200)) {
+        uint8_t cmd = 0, addr = 0;
+        uint16_t idx = 2;
+        uint8_t bitPos = 0;
+
+        while (idx + 1 < count && bitPos < 25) {
+            uint16_t space = pulses[idx + 1];
+            uint8_t bit = in_range(space, 1200, 280) ? 1 : 0;
+
+            if (bitPos < 7) {
+                cmd |= (bit << bitPos);
+            } else {
+                addr |= (bit << (bitPos - 7));
+            }
+            idx += 2;
+            bitPos++;
+        }
+
+        if (bitPos <= 12) {
+            res.protocol = PROTO_SIMPLE_SIRC;
+        } else if (bitPos <= 15) {
+            res.protocol = PROTO_SIMPLE_SIRC15;
+        } else {
+            res.protocol = PROTO_SIMPLE_SIRC20;
+        }
+
+        res.address = addr;
+        res.command = cmd;
+        return res;
+    }
+
+    // ====================== RC5 / RC5X (Manchester) ======================
+    if (count >= 18) {
+        uint8_t levels[40] = {0};
+        uint8_t bits[20] = {0};
+        uint16_t halfs;
+				uint8_t start;
+        for (start = 0; start <= 1; start++) {
+            halfs = extract_half_bits(pulses, count, start, RC5_HALF_BIT, levels, 40);
+            if (halfs < 28) continue;
+
+            uint8_t n = manchester_decode(levels, halfs, bits, 20);
+            if (n < 14 || bits[0] != 1 || bits[1] != 1) continue;
+
+            uint8_t toggle = bits[2];
+            uint8_t addr = 0, cmd = 0;
+
+            for (i = 0; i < 5; i++) addr = (addr << 1) | bits[3+i];
+            for (i = 0; i < 6; i++) cmd  = (cmd  << 1) | bits[8+i];
+
+            res.protocol = (toggle == 0) ? PROTO_SIMPLE_RC5 : PROTO_SIMPLE_RC5X;
+            res.address = addr;
+            res.command = cmd;
+            return res;
+        }
+    }
+
+    // ====================== RC6 ======================
+    if (in_range(h1, 2666, 400) && in_range(h2, 889, 200)) {
+        uint8_t levels[60] = {0};
+        uint8_t bits_buf[30] = {0};
+
+        uint16_t halfs = extract_half_bits(pulses+2, count-2, 1, RC6_HALF_BIT, levels, 60);
+        if (halfs >= 42) {
+            uint8_t n = manchester_decode(levels, halfs, bits_buf, 30);
+            if (n >= 21 && bits_buf[0] == 1) {
+                uint8_t addr = 0, cmd = 0;
+                for (i = 0; i < 8; i++) addr = (addr << 1) | bits_buf[5 + i];
+                for (i = 0; i < 8; i++) cmd  = (cmd  << 1) | bits_buf[13 + i];
+
+                res.protocol = PROTO_SIMPLE_RC6;
+                res.address = addr;
+                res.command = cmd;
+                return res;
+            }
+        }
+    }
+
+    // ====================== RCA ======================
+    if (in_range(h1, 4000, 600) && in_range(h2, 4000, 600)) {
+        res.protocol = PROTO_SIMPLE_RCA;
+        uint32_t bits = 0;
+        uint16_t idx = 2;
+        for (i = 0; i < 24 && idx + 1 < count; i++) {
+            uint16_t space = pulses[idx + 1];
+            uint8_t bit = in_range(space, 2000, 350) ? 1 : 0;
+            bits = (bits << 1) | bit;
+            idx += 2;
+        }
+        res.address = (bits >> 20) & 0x0F;
+        res.command = (bits >> 12) & 0xFF;
+        return res;
+    }
+
+    // ====================== KASEIKYO ======================
+    if (in_range(h1, 3456, 500) && in_range(h2, 1728, 400)) {
+        res.protocol = PROTO_SIMPLE_KASEIKYO;
+        uint32_t bits = 0;
+        uint16_t idx = 2;
+        for (i = 0; i < 48 && idx + 1 < count; i += 2) {  // simplified
+            uint16_t space = pulses[idx + 1];
+            uint8_t bit = in_range(space, 1296, 300) ? 1 : 0;
+            if (i < 32) bits |= ((uint32_t)bit << (i/2));
+            idx += 2;
+        }
+        res.address = bits & 0xFFFF;      // Vendor ID
+        res.command = (bits >> 16) & 0xFF;
+        return res;
+    }
+
+    return res;
+}
+
+void EXTI_setup(void)//edge detector
+{
+	GPIO_Init(GPIOD, GPIO_PIN_3, GPIO_MODE_IN_PU_IT); //using pd3 for exti
+	ITC_DeInit();
+	ITC_SetSoftwarePriority(ITC_IRQ_PORTD, ITC_PRIORITYLEVEL_0);
+	EXTI_DeInit();
+	EXTI_SetExtIntSensitivity(EXTI_PORT_GPIOD, EXTI_SENSITIVITY_RISE_FALL);
+}
+void TIM5_setup(void)//for counting between edges
+{
+	TIM5_DeInit(); 
+	TIM5_TimeBaseInit(TIM5_PRESCALER_16, 65000);
+	TIM5_ITConfig(TIM5_IT_UPDATE, DISABLE);
+	TIM5_Cmd(ENABLE);
+}
+// Use PC1 as the timer output pin
+#define IR_TIMER_PORT   GPIOC
+#define IR_TIMER_PIN    GPIO_PIN_6      // TIM1_CH1
+
+void SendIR(const uint16_t *data, uint8_t count,
+            uint16_t freq_hz, uint8_t duty_pc)
+{
+	  disableInterrupts(); 
+    // 1. Configure TIM1 PWM on Channel 1
+    uint16_t period = (16000000UL / freq_hz) - 1;   // 16 MHz / freq
+    TIM1_DeInit();
+    TIM1_TimeBaseInit(0, TIM1_COUNTERMODE_UP, period, 0);
+    uint16_t cmp = (uint16_t)((uint32_t)period * duty_pc / 100);
+
+    TIM1_OC1Init(TIM1_OCMODE_PWM1,               // PWM mode 1
+                 TIM1_OUTPUTSTATE_ENABLE,         // output enabled
+                 TIM1_OUTPUTNSTATE_DISABLE,       // complementary output disabled
+                 cmp,                             // compare value
+                 TIM1_OCPOLARITY_HIGH,            // active high
+                 TIM1_OCNPOLARITY_HIGH,
+                 TIM1_OCIDLESTATE_RESET,          // idle state = low
+                 TIM1_OCNIDLESTATE_RESET);
+
+    // Enable the timer and the master output, but immediately force outputs off (MOE=0)
+    TIM1_Cmd(ENABLE);                             // timer counter starts
+    TIM1_CtrlPWMOutputs(DISABLE);                 // MOE = 0 ? outputs idle (low)
+
+    // 2. Configure the timer output pin as push-pull (signal will be overridden by timer when MOE=1)
+    GPIO_Init(IR_TIMER_PORT, IR_TIMER_PIN, GPIO_MODE_OUT_PP_LOW_FAST);
+
+    // 3. Play back the pulses
+    for (i = 0; i < count; i++) {
+        uint16_t dur = data[i];
+        if (i & 1) {   // odd index = space (carrier off)
+            TIM1_CtrlPWMOutputs(DISABLE);          // MOE=0 ? pin goes to idle low
+        } else {       // even index = mark (carrier on)
+            TIM1_CtrlPWMOutputs(ENABLE);           // MOE=1 ? PWM appears on pin
+        }
+        delay_us(dur);
+    }
+		enableInterrupts(); 
+    // 4. Ensure carrier is off and stop the timer
+    TIM1_CtrlPWMOutputs(DISABLE);
+    TIM1_Cmd(DISABLE);
+}
+
+
+
+
+
+/*
+void TIM6_setup(void)//nonblocking 1ms
+{
+	TIM6_DeInit(); 
+	TIM6_TimeBaseInit(TIM6_PRESCALER_128, 124);
+	TIM6_ITConfig(TIM6_IT_UPDATE, ENABLE);
+	TIM6_Cmd(ENABLE);
+}
+*/
+void rx_cleanup(void){//default state
+	TIM5_Cmd(DISABLE);
+	TIM5_DeInit(); 
+	disableInterrupts();
+	TIM5_SetCounter(0);//just to be sure
+	first_edge = 1;
+}
+
+void clock_setup(void)
+	{
+		//setup clock for 16 MHz
+	CLK_DeInit();
+	CLK_HSECmd(ENABLE);
+	CLK_LSICmd(DISABLE);
+	CLK_HSICmd(DISABLE);
+	while (CLK_GetFlagStatus(CLK_FLAG_HSERDY) == FALSE);
+	CLK_ClockSwitchCmd(ENABLE);
+	CLK_SYSCLKConfig(CLK_PRESCALER_CPUDIV1);
+	CLK_ClockSwitchConfig(CLK_SWITCHMODE_AUTO, CLK_SOURCE_HSE,
+                          DISABLE, CLK_CURRENTCLOCKSTATE_ENABLE);
+	//CLK_PeripheralClockConfig(CLK_PERIPHERAL_UART1, ENABLE);
+	CLK_PeripheralClockConfig(CLK_PERIPHERAL_TIMER1, ENABLE);
+	CLK_PeripheralClockConfig(CLK_PERIPHERAL_TIMER5, ENABLE);
+	CLK_PeripheralClockConfig(CLK_PERIPHERAL_TIMER6, DISABLE);
+  }
+
+
+#ifdef USE_FULL_ASSERT
+void assert_failed(u8 *file, u32 line)
+{
+    (void)file;
+    (void)line;
+    while (1) {}
+}
+#endif
+
+
+
+
+
+

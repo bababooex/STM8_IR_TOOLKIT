@@ -249,7 +249,7 @@ def main():
 
     current_addr = 0
     group_info = []
-
+    #write bin format with magic code
     with open("flash.bin", "wb") as f:
         for dev_name, funcs in devices.items():
             for func_name, codes in funcs.items():

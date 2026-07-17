@@ -3,8 +3,17 @@
 #include "stm8s_it.h"
 #include "stm8s_delay.h"
 
-#define MAGIC_MARKER 0xBABAB01//marker for spi flash - marks start of each ir pulse train with other info
-#define TRIM_US 20000//trims code for decode/send because repeats create errors
+/*
+ *  IR_test_code for stm8, snippet form for now, spi read logic works great, can be used in something else
+ *	V 1.0.0 - cant really fit on chips tiny flash, needs rewriting via bare metal register handling
+ *  tested on stm8s903k3t6c chip variant
+ *  Created on: 17. 7. 2026
+ *  Author: Adam Fucik
+ *  
+ */
+
+#define MAGIC_MARKER 0xBABAB01 //marker for spi flash - marks start of each ir pulse train with other info, needs to match in comverter and also format as hexspeak
+#define TRIM_US 20000 //trims code for decode/send because repeats create errors
 //HW spi CS own pin
 #define FLASH_CS_PORT   GPIOB
 #define FLASH_CS_PIN    GPIO_PIN_4      // chip select
@@ -448,7 +457,7 @@ void SendIR(const uint16_t *data, uint8_t count,
 		HD1650_colonOn(); //indicate end of pulse train
 	  uint16_t i;
     uint8_t level = 1;      // start with mark
-    uint16_t period = (F_CPU / freq_hz) - 1;   // 4 MHz / freq
+    uint16_t period = (F_CPU / freq_hz) - 1;   // 16 MHz / freq
 		TIM5_setup();
     TIM1_DeInit();
 		TIM1_Cmd(ENABLE);
@@ -512,7 +521,7 @@ void EXTI_setup(void)//edge detector
 void TIM5_setup(void)//for counting between edges and dly
 {
 	TIM5_DeInit(); 
-	TIM5_TimeBaseInit(TIM5_PRESCALER_16, 0xFFFF);//1 uS
+	TIM5_TimeBaseInit(TIM5_PRESCALER_16, 0xFFFF);//1 uS, full 16 bit to avoid losing any duration
 	TIM5_ITConfig(TIM5_IT_UPDATE, DISABLE);
 	TIM5_Cmd(ENABLE);
 }    
